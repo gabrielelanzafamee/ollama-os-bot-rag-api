@@ -1,3 +1,6 @@
+import re
+import requests
+from bs4 import BeautifulSoup
 import ollama
 from transformers import AutoModel, AutoTokenizer
 from sentence_transformers.util import cos_sim
@@ -36,7 +39,13 @@ class Embedding:
         return embeddings
 
     def get_similarities(self, embeddings):
-        similarities = cos_sim(embeddings[0], embeddings[1:])
+        # similarities = cos_sim(embeddings[0], embeddings[1:])
+        similarities = []
+
+        for i in range(1, len(embeddings)):
+            similarity = cos_sim(embeddings[0], embeddings[i])
+            similarities.append((i, similarity))
+
         return similarities
     
 
@@ -52,7 +61,6 @@ class LLM:
                 'top_p': top_p,
                 'top_k': top_k,
                 'temperature': temperature,
-                'stop': stop
             },
             stream=stream
         )
@@ -63,17 +71,65 @@ class Bot:
         self.llm = LLM(model_id)
         
     def chat(self, messages, temperature=0.5, stop=[], top_p=0.95, top_k=0.5, stream=False):
+        web_context = self.online_context(messages)
+        print(web_context[0])
+
+        context = "\n\n".join(map(lambda item: item[2], web_context[:3]))
+        messages[0]['content'] = f"{messages[0]['content']}\n\n##Context\n{context}"
+
+        print(messages)
+
         return self.llm.chat(messages, temperature, stop, top_p, top_k, stream)
+    
+    def online_context(self, messages):
+        prompt = messages[-1]['content']
+        urls = self._extract_urls(prompt)
+        pages = self._get_pages(urls)
+        pages = "\n\n".join(pages)
+
+        chunk_size = 1024 # in characters
+        chunks = [pages[i:i+chunk_size] for i in range(0, len(pages), chunk_size)]
+        embeddings_chunks = np.array(list(map(self.embedding.encode, chunks))[0])
+        
+        ## prompt without urls
+        prompt = re.sub(r'(https?://\S+)', '', prompt)
+        prompt = self.embedding.transform_query(prompt)
+
+        query = self.embedding.encode([prompt])
+        embeddings = np.concatenate((query, embeddings_chunks), axis=0)
+
+        similarities = self.embedding.get_similarities(embeddings)
+        similarities = list(map(lambda x: (x[0], x[1].item(), chunks[x[0]-1]), similarities))
+        similarities = sorted(similarities, key=lambda x: x[1], reverse=True)
+
+        return similarities
+
+    def _get_pages(self, urls):
+        pages = []
+
+        for url in urls:
+            response = requests.get(url)
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            for p in soup.find_all('p'):
+                pages.append(p.get_text())
+
+        return pages
+
+    def _extract_urls(self, text):
+        return re.findall(r'(https?://\S+)', text)
     
     
 bot = Bot("phi3")
-print(bot.embedding.encode(["hello", "world"]))
-print(bot.embedding.get_similarities(bot.embedding.encode(["hello", "world", "world", "hello"])))
 
-stream = bot.chat([
-    { "role": "system", "content": "You are an AI assistant. Called Bot" },
-    { "role": "user", "content": "What is your name? and what is 2+2? and can you translate hello my name is Luca in Italian and Sicilian" },
-], stream=True)
 
-for chunk in stream:
-  print(chunk['message']['content'], end='', flush=True)
+while True:
+    stream = bot.chat([
+        { "role": "system", "content": "You are an AI assistant. Called Bot" },
+        { "role": "user", "content": input("> ") },
+    ], stream=True, temperature=0.1, top_p=0.95, top_k=0.4)
+
+    for chunk in stream:
+        print(chunk['message']['content'], end='', flush=True)
+
+    print("\n\n")

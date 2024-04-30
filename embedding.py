@@ -25,7 +25,7 @@ def pooling(outputs: torch.Tensor, inputs: Dict,  strategy: str = 'cls') -> np.n
 # 1. load model
 model_id = 'mixedbread-ai/mxbai-embed-large-v1'
 tokenizer = AutoTokenizer.from_pretrained(model_id)
-model = AutoModel.from_pretrained(model_id).cuda()
+model = AutoModel.from_pretrained(model_id)
 
 
 docs = [
@@ -39,7 +39,7 @@ docs = [
 # 2. encode
 inputs = tokenizer(docs, padding=True, return_tensors='pt')
 for k, v in inputs.items():
-    inputs[k] = v.cuda()
+    inputs[k] = v
 outputs = model(**inputs).last_hidden_state
 embeddings = pooling(outputs, inputs, 'cls')
 
